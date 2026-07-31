@@ -1,0 +1,79 @@
+name: wan-deploy
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [wan-deploy]
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      BEAM_TOKEN: ${{ secrets.BEAM_TOKEN }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: "fd98d813898e36431c9d6af3b0beeb20"
+      R2_BUCKET: "e5-agora"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Beam client
+        run: pip install --quiet beam-client packaging
+      - name: Configure Beam
+        run: beam configure default --token "$BEAM_TOKEN"
+      - name: Ensure Beam secrets (R2)
+        run: |
+          set +e
+          for n in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; do
+            v="$(printenv "$n")"
+            beam secret create "$n" "$v" >/dev/null 2>&1 || beam secret modify "$n" "$v" >/dev/null 2>&1
+          done
+          echo "beam secrets ensured"
+      - name: Deploy Wan video lane to Beam
+        run: |
+          set -eo pipefail
+          beam deploy wan_app.py:generate 2>&1 | tee wan_deploy.log
+          URL=$(grep -oiE 'https://[a-z0-9._/-]*app\.beam\.cloud[a-z0-9._/-]*' wan_deploy.log | head -1)
+          echo "WAN_URL=$URL"
+          printf '%s' "$URL" > wan_invoke_url.txt
+      - name: Commit wan invoke url
+        run: |
+          git config user.name "e5-runner"
+          git config user.email "runner@e5enclave.com"
+          git add wan_invoke_url.txt wan_deploy.log 2>/dev/null || true
+          git commit -m "record wan invoke url" || echo "no change"
+          git push
+      - name: Run proof render + wait
+        run: |
+          set -eo pipefail
+          URL=$(cat wan_invoke_url.txt); echo "invoke: $URL"
+          BODY='{"prompt":"A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail","height":480,"width":832,"num_frames":81,"steps":30,"guidance":5.0,"seed":42,"fps":24,"out_key":"wan/proof/wan22_5b_proof.mp4"}'
+          TID=$(curl -s -X POST "$URL" -H "Authorization: Bearer $BEAM_TOKEN" -H "Content-Type: application/json" -d "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('task_id',''))")
+          echo "task=$TID"; [ -n "$TID" ] || { echo "no task_id"; exit 1; }
+          for i in $(seq 1 480); do
+            S=$(curl -s "https://api.beam.cloud/v2/task/$TID/" -H "Authorization: Bearer $BEAM_TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+            echo "status=$S ($i)"
+            case "$S" in COMPLETE) echo done; exit 0;; ERROR|FAILED|CANCELLED|TIMEOUT|EXPIRED) echo "failed:$S"; exit 1;; esac
+            sleep 10
+          done
+          echo "timed out"; exit 1
+      - name: Notify phone (APNs push)
+        if: success()
+        env:
+          APP_TOKEN: ${{ secrets.APP_TOKEN }}
+        run: |
+          [ -z "$APP_TOKEN" ] && { echo "no APP_TOKEN secret; skip push"; exit 0; }
+          curl -s -X POST "https://fleet-command.yisraelleemccartney.workers.dev/api/v1/push-test" \
+            -H "Authorization: Bearer $APP_TOKEN" -H "Content-Type: application/json" \
+            -d '{"title":"E5 Fleet Command","body":"✓ Wan 2.2 proof render done — MP4 on R2"}' | head -c 300; echo
+      - name: Log to Lattice Hub
+        if: success()
+        env:
+          HUB_SECRET: ${{ secrets.HUB_SECRET }}
+        run: |
+          [ -z "$HUB_SECRET" ] && { echo "no HUB_SECRET; skip"; exit 0; }
+          curl -s -X POST "https://lattice-hub.yisraelleemccartney.workers.dev/command" \
+            -H "Authorization: Bearer $HUB_SECRET" -H "Content-Type: application/json" \
+            -d '{"target":"GPU","objective":"Wan 2.2 proof render ✓ done","kind":"gpu"}' | head -c 200; echo
