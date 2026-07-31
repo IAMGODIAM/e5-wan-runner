@@ -33,8 +33,14 @@ jobs:
           echo "beam secrets ensured"
       - name: Deploy Wan video lane to Beam
         run: |
-          set -eo pipefail
-          beam deploy wan_app.py:generate 2>&1 | tee wan_deploy.log
+          set -o pipefail
+          ok=0
+          for a in 1 2 3; do
+            echo "=== beam deploy attempt $a ==="
+            if beam deploy wan_app.py:generate 2>&1 | tee wan_deploy.log; then ok=1; break; fi
+            echo "attempt $a failed; backing off"; sleep 45
+          done
+          [ "$ok" = "1" ] || { echo "beam deploy failed after 3 attempts"; exit 1; }
           URL=$(grep -oiE 'https://[a-z0-9._/-]*app\.beam\.cloud[a-z0-9._/-]*' wan_deploy.log | head -1)
           echo "WAN_URL=$URL"
           printf '%s' "$URL" > wan_invoke_url.txt
