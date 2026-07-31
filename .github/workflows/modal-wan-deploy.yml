@@ -57,7 +57,7 @@ jobs:
           STAT=$(grep -i 'stat' modal_wan_urls.txt | head -1)
           echo "kick: $KICK"; echo "stat: $STAT"
           [ -n "$KICK" ] && [ -n "$STAT" ] || { echo "endpoint URLs missing"; exit 1; }
-          BODY=$(python3 -c "import json,os;print(json.dumps({'k':os.environ['WAN_GATE'],'prompt':'A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail','height':480,'width':832,'num_frames':81,'steps':30,'guidance':5.0,'seed':42,'fps':24,'out_key':'wan/proof/wan22_5b_proof.mp4'}))")
+          BODY=$(python3 -c "import json,os;print(json.dumps({'k':os.environ['WAN_GATE'],'prompt':'A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail','height':480,'width':832,'num_frames':81,'steps':4,'guidance':1.0,'seed':42,'fps':24,'model_id':'FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers','out_key':'wan/proof/wan22_5b_lightning.mp4'}))")
           RESP=$(curl -s -m 120 -X POST "$KICK" -H "Content-Type: application/json" -d "$BODY")
           echo "kick raw: $(echo "$RESP" | head -c 300)"
           CID=$(echo "$RESP" | python3 -c "
