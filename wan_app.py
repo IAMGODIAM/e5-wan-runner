@@ -7,26 +7,16 @@ payload, so future runs (720p, more frames, i2v later) need no redeploy.
 """
 from beam import task_queue, Image, Volume
 
+# Staged installs with --no-cache-dir: the default single-step install pulled
+# torch's full CUDA-13 wheel train (~10GB unpacked) and the Beam image builder
+# killed the pip subprocess. torch 2.7.1+cu128 is leaner and proven on A10G (sm_86).
 image = (
     Image(python_version="python3.11")
     .add_commands([
-        "apt-get update -y",
-        "apt-get install -y ffmpeg",
-    ])
-    .add_python_packages([
-        "torch",
-        "diffusers>=0.35.0",
-        "transformers>=4.46.0",
-        "accelerate",
-        "safetensors",
-        "sentencepiece",
-        "protobuf",
-        "ftfy",
-        "imageio",
-        "imageio-ffmpeg",
-        "opencv-python-headless",
-        "boto3",
-        "huggingface_hub[hf_transfer]",
+        "python3.11 -m pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128",
+        "python3.11 -m pip install --no-cache-dir 'diffusers>=0.35.0' 'transformers>=4.46.0' "
+        "accelerate safetensors sentencepiece protobuf ftfy imageio imageio-ffmpeg boto3 "
+        "'huggingface_hub[hf_transfer]'",
     ])
 )
 
