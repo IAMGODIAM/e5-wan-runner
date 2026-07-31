@@ -1,10 +1,14 @@
-"""E5 Sovereign Video Lane — Wan 2.2 TI2V-5B on Modal (L4), standby mirror of the Beam lane.
+"""E5 Sovereign Video Lane — Wan 2.2 on Modal. Two tiers, one body.
 
-Deployed by GitHub Actions (gRPC control plane). Driven over HTTP/1.1:
-POST kick (proxy-authed) -> spawns the GPU render, returns call_id;
-GET stat?call_id=... -> {done, result}. Render writes MP4 + timing JSON to R2.
-Both web endpoints require Modal proxy auth (Modal-Key / Modal-Secret headers)
-because the invoke URLs are committed to a public repo.
+Tiers:
+  small (default) — L4 24GB: TI2V-5B t2v/i2v, FastWan distill. Volume lane.
+  big             — H100 80GB + 128Gi RAM: Wan2.2 A14B MoE (T2V/I2V) with the
+                    LightX2V Lightning 4-step LoRA pair (high/low-noise experts).
+
+Driven over HTTP/1.1: POST kick (gate-keyed) -> {call_id}; GET stat -> {done,result}.
+Renders write MP4 + timing JSON to R2. Gate = Modal secret "wan-gate" (mirrored in
+GH Actions secrets + treasurebox); Modal proxy auth is not used (needs dashboard-
+minted tokens). Source-image URLs are short-lived presigned R2 URLs, never logged.
 """
 import modal
 
@@ -32,37 +36,32 @@ image = (
 app = modal.App("e5-wan-video-modal", image=image)
 vol = modal.Volume.from_name("e5-wan-hf", create_if_missing=True)
 
-
-@app.function(
-    gpu="L4",
+_COMMON = dict(
     timeout=3600,
     volumes={"/vol/hf": vol},
     secrets=[modal.Secret.from_name("r2-creds")],
 )
-def render_wan(
-    prompt: str = (
-        "A majestic black dragon with gold-trimmed scales soars over a sunlit "
-        "Miami skyline at golden hour, slow cinematic camera orbit, volumetric "
-        "light, photoreal detail"
-    ),
-    negative_prompt: str = (
-        "blurry, distorted, low quality, watermark, text, extra limbs, "
-        "static image, jpeg artifacts"
-    ),
-    height: int = 480,
-    width: int = 832,
-    num_frames: int = 81,
-    steps: int = 30,
-    guidance: float = 5.0,
-    seed: int = 42,
-    fps: int = 24,
-    out_key: str = "wan/proof/wan22_5b_proof.mp4",
-    model_id: str = MODEL_ID,
-    lora_repo: str = "",
-    lora_file: str = "",
-    lora_scale: float = 1.0,
-    flow_shift: float = 0.0,
-    image_url: str = "",
+
+
+def _render(
+    prompt: str,
+    negative_prompt: str,
+    height: int,
+    width: int,
+    num_frames: int,
+    steps: int,
+    guidance: float,
+    seed: int,
+    fps: int,
+    out_key: str,
+    model_id: str,
+    lora_repo: str,
+    lora_file: str,
+    lora_scale: float,
+    lora_file2: str,
+    lora_scale2: float,
+    flow_shift: float,
+    image_url: str,
 ):
     import os, time, json, traceback
 
@@ -91,11 +90,20 @@ def render_wan(
         )
         pipe_cls = WanImageToVideoPipeline if image_url else WanPipeline
         pipe = pipe_cls.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16)
-        if lora_repo:
+        adapters, weights = [], []
+        if lora_repo and lora_file:
             pipe.load_lora_weights(
-                lora_repo, weight_name=(lora_file or None), adapter_name="turbo"
+                lora_repo, weight_name=lora_file, adapter_name="turbo"
             )
-            pipe.set_adapters(["turbo"], adapter_weights=[float(lora_scale)])
+            adapters.append("turbo"); weights.append(float(lora_scale))
+        if lora_repo and lora_file2:
+            pipe.load_lora_weights(
+                lora_repo, weight_name=lora_file2, adapter_name="turbo2",
+                load_into_transformer_2=True,
+            )
+            adapters.append("turbo2"); weights.append(float(lora_scale2))
+        if adapters:
+            pipe.set_adapters(adapters, adapter_weights=weights)
         if float(flow_shift) > 0:
             from diffusers import UniPCMultistepScheduler
 
@@ -143,7 +151,8 @@ def render_wan(
             "params": {
                 "h": height, "w": width, "frames": num_frames, "steps": steps,
                 "guidance": guidance, "seed": seed, "fps": fps, "model": model_id,
-                "lora": (f"{lora_repo}/{lora_file}@{lora_scale}" if lora_repo else ""),
+                "lora": (f"{lora_file}@{lora_scale}" if lora_file else ""),
+                "lora2": (f"{lora_file2}@{lora_scale2}" if lora_file2 else ""),
                 "flow_shift": flow_shift,
                 "i2v": bool(image_url),
             },
@@ -166,10 +175,51 @@ def render_wan(
         return {"error": str(e), "error_key": err_key}
 
 
-# NOTE: Modal proxy auth requires dashboard-minted Proxy Auth Tokens (API tokens
-# are rejected: "invalid credentials for proxy authorization"). Dashboard steps are
-# out of autonomous scope, so the gate is an app-level shared secret (Modal secret
-# "wan-gate", mirrored in GH Actions secrets + the E5 treasurebox vault).
+_DEFAULTS = dict(
+    prompt="",
+    negative_prompt=(
+        "blurry, distorted, low quality, watermark, text, extra limbs, "
+        "static image, jpeg artifacts"
+    ),
+    height=480,
+    width=832,
+    num_frames=81,
+    steps=30,
+    guidance=5.0,
+    seed=42,
+    fps=24,
+    out_key="wan/proof/out.mp4",
+    model_id=MODEL_ID,
+    lora_repo="",
+    lora_file="",
+    lora_scale=1.0,
+    lora_file2="",
+    lora_scale2=1.0,
+    flow_shift=0.0,
+    image_url="",
+)
+
+
+def _merged(kw: dict) -> dict:
+    p = dict(_DEFAULTS)
+    p.update({k: v for k, v in (kw or {}).items() if k in _DEFAULTS})
+    if not p["prompt"]:
+        p["prompt"] = (
+            "A majestic black dragon with gold-trimmed scales soars over a sunlit "
+            "Miami skyline at golden hour, slow cinematic camera orbit, volumetric "
+            "light, photoreal detail"
+        )
+    return p
+
+
+@app.function(gpu="L4", **_COMMON)
+def render_wan(**kw):
+    return _render(**_merged(kw))
+
+
+@app.function(gpu="H100", memory=131072, cpu=16.0, **_COMMON)
+def render_wan_big(**kw):
+    return _render(**_merged(kw))
 
 
 @app.function(secrets=[modal.Secret.from_name("wan-gate")])
@@ -180,8 +230,10 @@ def kick(body: dict):
     payload = dict(body or {})
     if payload.pop("k", None) != os.environ.get("WAN_GATE"):
         return {"error": "unauthorized"}
-    call = render_wan.spawn(**payload)
-    return {"call_id": call.object_id}
+    tier = payload.pop("tier", "small")
+    fn = render_wan_big if tier == "big" else render_wan
+    call = fn.spawn(**payload)
+    return {"call_id": call.object_id, "tier": tier}
 
 
 @app.function(secrets=[modal.Secret.from_name("wan-gate")])
