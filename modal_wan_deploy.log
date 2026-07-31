@@ -1,11 +1,12 @@
 ✓ Created objects.
 ├── 🔨 Created mount /home/runner/work/e5-wan-runner/e5-wan-runner/modal_wan.py
+├── 🔨 Created function render_wan_big.
 ├── 🔨 Created function render_wan.
 ├── 🔨 Created web function kick => 
 │   https://iamgodiam--e5-wan-video-modal-kick.modal.run
 └── 🔨 Created web function stat => 
     https://iamgodiam--e5-wan-video-modal-stat.modal.run
-✓ App deployed in 1.480s! 🎉
+✓ App deployed in 1.183s! 🎉
 
 View Deployment: 
 https://modal.com/apps/iamgodiam/main/deployed/e5-wan-video-modal
