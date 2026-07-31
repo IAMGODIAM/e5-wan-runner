@@ -11,6 +11,7 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_GATE: ${{ secrets.WAN_GATE }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_ACCOUNT_ID: "fd98d813898e36431c9d6af3b0beeb20"
@@ -29,6 +30,12 @@ jobs:
             R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
             R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
             R2_BUCKET="$R2_BUCKET" || echo "secret already exists"
+      - name: Ensure Modal wan-gate secret (synced to GH value)
+        run: |
+          [ -n "$WAN_GATE" ] || { echo "WAN_GATE GH secret missing"; exit 1; }
+          modal secret create --force wan-gate WAN_GATE="$WAN_GATE" \
+            || modal secret create wan-gate WAN_GATE="$WAN_GATE" \
+            || echo "wan-gate exists (could not overwrite — values may drift)"
       - name: Deploy Wan lane to Modal
         run: |
           set -eo pipefail
@@ -50,12 +57,20 @@ jobs:
           STAT=$(grep -i 'stat' modal_wan_urls.txt | head -1)
           echo "kick: $KICK"; echo "stat: $STAT"
           [ -n "$KICK" ] && [ -n "$STAT" ] || { echo "endpoint URLs missing"; exit 1; }
-          BODY='{"prompt":"A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail","height":480,"width":832,"num_frames":81,"steps":30,"guidance":5.0,"seed":42,"fps":24,"out_key":"wan/proof/wan22_5b_proof.mp4"}'
-          CID=$(curl -s -X POST "$KICK" -H "Modal-Key: $MODAL_TOKEN_ID" -H "Modal-Secret: $MODAL_TOKEN_SECRET" -H "Content-Type: application/json" -d "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('call_id',''))")
+          BODY=$(python3 -c "import json,os;print(json.dumps({'k':os.environ['WAN_GATE'],'prompt':'A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail','height':480,'width':832,'num_frames':81,'steps':30,'guidance':5.0,'seed':42,'fps':24,'out_key':'wan/proof/wan22_5b_proof.mp4'}))")
+          RESP=$(curl -s -m 120 -X POST "$KICK" -H "Content-Type: application/json" -d "$BODY")
+          echo "kick raw: $(echo "$RESP" | head -c 300)"
+          CID=$(echo "$RESP" | python3 -c "
+          import sys,json
+          try: print(json.load(sys.stdin).get('call_id',''))
+          except Exception: print('')")
           echo "call_id=$CID"; [ -n "$CID" ] || { echo "no call_id"; exit 1; }
           for i in $(seq 1 480); do
-            R=$(curl -s "$STAT?call_id=$CID" -H "Modal-Key: $MODAL_TOKEN_ID" -H "Modal-Secret: $MODAL_TOKEN_SECRET")
-            D=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin).get('done'))" 2>/dev/null)
+            R=$(curl -s -m 60 "$STAT?call_id=$CID&k=$WAN_GATE")
+            D=$(echo "$R" | python3 -c "
+          import sys,json
+          try: print(json.load(sys.stdin).get('done'))
+          except Exception: print('parse-error')")
             echo "poll $i done=$D"
             if [ "$D" = "True" ]; then
               echo "$R" | head -c 2000; echo
