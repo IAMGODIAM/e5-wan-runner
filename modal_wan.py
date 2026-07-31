@@ -62,6 +62,7 @@ def render_wan(
     lora_file: str = "",
     lora_scale: float = 1.0,
     flow_shift: float = 0.0,
+    image_url: str = "",
 ):
     import os, time, json, traceback
 
@@ -81,14 +82,15 @@ def render_wan(
     err_key = out_key.rsplit("/", 1)[0] + "/error.txt"
     try:
         import torch
-        from diffusers import WanPipeline, AutoencoderKLWan
-        from diffusers.utils import export_to_video
+        from diffusers import WanPipeline, WanImageToVideoPipeline, AutoencoderKLWan
+        from diffusers.utils import export_to_video, load_image
 
         t0 = time.time()
         vae = AutoencoderKLWan.from_pretrained(
             model_id, subfolder="vae", torch_dtype=torch.float32
         )
-        pipe = WanPipeline.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16)
+        pipe_cls = WanImageToVideoPipeline if image_url else WanPipeline
+        pipe = pipe_cls.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16)
         if lora_repo:
             pipe.load_lora_weights(
                 lora_repo, weight_name=(lora_file or None), adapter_name="turbo"
@@ -109,8 +111,7 @@ def render_wan(
         vol.commit()  # persist freshly-downloaded weights for future warm runs
 
         gen = torch.Generator(device="cpu").manual_seed(int(seed))
-        t1 = time.time()
-        frames = pipe(
+        call_kwargs = dict(
             prompt=prompt,
             negative_prompt=negative_prompt,
             height=int(height),
@@ -119,7 +120,11 @@ def render_wan(
             guidance_scale=float(guidance),
             num_inference_steps=int(steps),
             generator=gen,
-        ).frames[0]
+        )
+        if image_url:
+            call_kwargs["image"] = load_image(image_url)
+        t1 = time.time()
+        frames = pipe(**call_kwargs).frames[0]
         render_s = round(time.time() - t1, 1)
 
         out_path = "/tmp/out.mp4"
@@ -140,6 +145,7 @@ def render_wan(
                 "guidance": guidance, "seed": seed, "fps": fps, "model": model_id,
                 "lora": (f"{lora_repo}/{lora_file}@{lora_scale}" if lora_repo else ""),
                 "flow_shift": flow_shift,
+                "i2v": bool(image_url),
             },
         }
         s3c.put_object(
