@@ -26,6 +26,7 @@ image = (
         "boto3",
         "huggingface_hub[hf_transfer]",
         "fastapi[standard]",
+        "peft",
     )
 )
 app = modal.App("e5-wan-video-modal", image=image)
@@ -56,6 +57,11 @@ def render_wan(
     seed: int = 42,
     fps: int = 24,
     out_key: str = "wan/proof/wan22_5b_proof.mp4",
+    model_id: str = MODEL_ID,
+    lora_repo: str = "",
+    lora_file: str = "",
+    lora_scale: float = 1.0,
+    flow_shift: float = 0.0,
 ):
     import os, time, json, traceback
 
@@ -80,9 +86,20 @@ def render_wan(
 
         t0 = time.time()
         vae = AutoencoderKLWan.from_pretrained(
-            MODEL_ID, subfolder="vae", torch_dtype=torch.float32
+            model_id, subfolder="vae", torch_dtype=torch.float32
         )
-        pipe = WanPipeline.from_pretrained(MODEL_ID, vae=vae, torch_dtype=torch.bfloat16)
+        pipe = WanPipeline.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16)
+        if lora_repo:
+            pipe.load_lora_weights(
+                lora_repo, weight_name=(lora_file or None), adapter_name="turbo"
+            )
+            pipe.set_adapters(["turbo"], adapter_weights=[float(lora_scale)])
+        if float(flow_shift) > 0:
+            from diffusers import UniPCMultistepScheduler
+
+            pipe.scheduler = UniPCMultistepScheduler.from_config(
+                pipe.scheduler.config, flow_shift=float(flow_shift)
+            )
         pipe.enable_model_cpu_offload()
         try:
             pipe.vae.enable_tiling()
@@ -120,7 +137,9 @@ def render_wan(
             "render_s": render_s,
             "params": {
                 "h": height, "w": width, "frames": num_frames, "steps": steps,
-                "guidance": guidance, "seed": seed, "fps": fps, "model": MODEL_ID,
+                "guidance": guidance, "seed": seed, "fps": fps, "model": model_id,
+                "lora": (f"{lora_repo}/{lora_file}@{lora_scale}" if lora_repo else ""),
+                "flow_shift": flow_shift,
             },
         }
         s3c.put_object(
