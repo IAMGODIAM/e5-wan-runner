@@ -141,16 +141,31 @@ def render_wan(
         return {"error": str(e), "error_key": err_key}
 
 
-@app.function()
-@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+# NOTE: Modal proxy auth requires dashboard-minted Proxy Auth Tokens (API tokens
+# are rejected: "invalid credentials for proxy authorization"). Dashboard steps are
+# out of autonomous scope, so the gate is an app-level shared secret (Modal secret
+# "wan-gate", mirrored in GH Actions secrets + the E5 treasurebox vault).
+
+
+@app.function(secrets=[modal.Secret.from_name("wan-gate")])
+@modal.fastapi_endpoint(method="POST")
 def kick(body: dict):
-    call = render_wan.spawn(**(body or {}))
+    import os
+
+    payload = dict(body or {})
+    if payload.pop("k", None) != os.environ.get("WAN_GATE"):
+        return {"error": "unauthorized"}
+    call = render_wan.spawn(**payload)
     return {"call_id": call.object_id}
 
 
-@app.function()
-@modal.fastapi_endpoint(method="GET", requires_proxy_auth=True)
-def stat(call_id: str):
+@app.function(secrets=[modal.Secret.from_name("wan-gate")])
+@modal.fastapi_endpoint(method="GET")
+def stat(call_id: str, k: str = ""):
+    import os
+
+    if k != os.environ.get("WAN_GATE"):
+        return {"error": "unauthorized"}
     fc = modal.FunctionCall.from_id(call_id)
     try:
         res = fc.get(timeout=0)
