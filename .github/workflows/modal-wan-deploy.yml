@@ -1,0 +1,76 @@
+name: modal-wan-deploy
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [modal-wan-deploy]
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: "fd98d813898e36431c9d6af3b0beeb20"
+      R2_BUCKET: "e5-agora"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Modal
+        run: pip install --quiet modal fastapi
+      - name: Ensure Modal R2 secret
+        run: |
+          modal secret create r2-creds \
+            R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+            R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+            R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+            R2_BUCKET="$R2_BUCKET" || echo "secret already exists"
+      - name: Deploy Wan lane to Modal
+        run: |
+          set -eo pipefail
+          modal deploy modal_wan.py 2>&1 | tee modal_wan_deploy.log
+          grep -oiE 'https://[a-z0-9._-]*\.modal\.run[a-z0-9._/-]*' modal_wan_deploy.log | sort -u > modal_wan_urls.txt
+          cat modal_wan_urls.txt
+          [ -s modal_wan_urls.txt ] || { echo "no modal URLs captured"; exit 1; }
+      - name: Commit modal wan urls
+        run: |
+          git config user.name "e5-runner"
+          git config user.email "runner@e5enclave.com"
+          git add modal_wan_urls.txt modal_wan_deploy.log 2>/dev/null || true
+          git commit -m "record modal wan urls" || echo "no change"
+          git push
+      - name: Kick proof render + wait
+        run: |
+          set -o pipefail
+          KICK=$(grep -i 'kick' modal_wan_urls.txt | head -1)
+          STAT=$(grep -i 'stat' modal_wan_urls.txt | head -1)
+          echo "kick: $KICK"; echo "stat: $STAT"
+          [ -n "$KICK" ] && [ -n "$STAT" ] || { echo "endpoint URLs missing"; exit 1; }
+          BODY='{"prompt":"A majestic black dragon with gold-trimmed scales soars over a sunlit Miami skyline at golden hour, slow cinematic camera orbit, volumetric light, photoreal detail","height":480,"width":832,"num_frames":81,"steps":30,"guidance":5.0,"seed":42,"fps":24,"out_key":"wan/proof/wan22_5b_proof.mp4"}'
+          CID=$(curl -s -X POST "$KICK" -H "Modal-Key: $MODAL_TOKEN_ID" -H "Modal-Secret: $MODAL_TOKEN_SECRET" -H "Content-Type: application/json" -d "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('call_id',''))")
+          echo "call_id=$CID"; [ -n "$CID" ] || { echo "no call_id"; exit 1; }
+          for i in $(seq 1 480); do
+            R=$(curl -s "$STAT?call_id=$CID" -H "Modal-Key: $MODAL_TOKEN_ID" -H "Modal-Secret: $MODAL_TOKEN_SECRET")
+            D=$(echo "$R" | python3 -c "import sys,json;print(json.load(sys.stdin).get('done'))" 2>/dev/null)
+            echo "poll $i done=$D"
+            if [ "$D" = "True" ]; then
+              echo "$R" | head -c 2000; echo
+              echo "$R" | python3 -c "import sys,json;d=json.load(sys.stdin);r=d.get('result') or {};sys.exit(0 if r.get('rc')==0 else 1)"
+              exit $?
+            fi
+            sleep 10
+          done
+          echo "timed out"; exit 1
+      - name: Notify phone (APNs push)
+        if: success()
+        env:
+          APP_TOKEN: ${{ secrets.APP_TOKEN }}
+        run: |
+          [ -z "$APP_TOKEN" ] && { echo "no APP_TOKEN secret; skip push"; exit 0; }
+          curl -s -X POST "https://fleet-command.yisraelleemccartney.workers.dev/api/v1/push-test" \
+            -H "Authorization: Bearer $APP_TOKEN" -H "Content-Type: application/json" \
+            -d '{"title":"E5 Fleet Command","body":"✓ Wan 2.2 proof render done (Modal) — MP4 on R2"}' | head -c 300; echo
