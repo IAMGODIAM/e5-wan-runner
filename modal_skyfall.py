@@ -28,6 +28,11 @@ image = (
             "HF_HOME": "/vol/hf",
             "HF_HUB_ENABLE_HF_TRANSFER": "1",
             "VLLM_DO_NOT_TRACK": "1",
+            # debian_slim has the CUDA runtime (via torch) but NOT nvcc, so
+            # FlashInfer's JIT sampler/attention kernels can't compile. Force
+            # the prebuilt torch-native paths — no nvcc needed.
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            "VLLM_ATTENTION_BACKEND": "FLASH_ATTN",
         }
     )
 )
