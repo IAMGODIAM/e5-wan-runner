@@ -1,0 +1,52 @@
+name: modal-framepack-deploy
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [modal-framepack-deploy]
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_GATE: ${{ secrets.WAN_GATE }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: "fd98d813898e36431c9d6af3b0beeb20"
+      R2_BUCKET: "e5-agora"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Modal
+        run: pip install --quiet modal fastapi
+      - name: Ensure Modal R2 secret
+        run: |
+          modal secret create r2-creds \
+            R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+            R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+            R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+            R2_BUCKET="$R2_BUCKET" || echo "secret already exists"
+      - name: Ensure Modal wan-gate secret (synced to GH value)
+        run: |
+          [ -n "$WAN_GATE" ] || { echo "WAN_GATE GH secret missing"; exit 1; }
+          modal secret create --force wan-gate WAN_GATE="$WAN_GATE" \
+            || modal secret create wan-gate WAN_GATE="$WAN_GATE" \
+            || echo "wan-gate exists (values may drift)"
+      - name: Deploy FramePack lane to Modal
+        run: |
+          set -eo pipefail
+          modal deploy modal_framepack.py 2>&1 | tee modal_framepack_deploy.log
+          grep -oiE 'https://[a-z0-9._-]*\.modal\.run[a-z0-9._/-]*' modal_framepack_deploy.log | sort -u > modal_framepack_urls.txt
+          cat modal_framepack_urls.txt
+          [ -s modal_framepack_urls.txt ] || { echo "no modal URLs captured"; exit 1; }
+      - name: Commit modal framepack urls
+        run: |
+          git config user.name "e5-runner"
+          git config user.email "runner@e5enclave.com"
+          git add modal_framepack_urls.txt modal_framepack_deploy.log 2>/dev/null || true
+          git commit -m "record modal framepack urls" || echo "no change"
+          git push
