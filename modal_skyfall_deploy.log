@@ -1,0 +1,27 @@
+Building image im-gptnkCGkOHSCe8dFaPOrmF
+
+=> Step 0: FROM base
+
+=> Step 1: ENV HF_HOME=/vol/hf
+
+=> Step 2: ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+=> Step 3: ENV VLLM_DO_NOT_TRACK=1
+
+=> Step 4: ENV VLLM_USE_FLASHINFER_SAMPLER=0
+
+=> Step 5: ENV VLLM_ATTENTION_BACKEND=FLASH_ATTN
+Saving image...
+Image saved, took 904.33ms
+
+Built image im-gptnkCGkOHSCe8dFaPOrmF in 1.93s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   /home/runner/work/e5-wan-runner/e5-wan-runner/modal_skyfall.py
+└── 🔨 Created web function serve => 
+    https://iamgodiam--e5-skyfall-llm-serve.modal.run
+✓ App deployed in 4.052s! 🎉
+
+View Deployment: https://modal.com/apps/iamgodiam/main/deployed/e5-skyfall-llm
