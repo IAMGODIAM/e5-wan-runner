@@ -1,0 +1,41 @@
+name: modal-skyfall-deploy
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [modal-skyfall-deploy]
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      WAN_GATE: ${{ secrets.WAN_GATE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Modal
+        run: pip install --quiet modal fastapi
+      - name: Ensure Modal wan-gate secret (used as the vLLM API key)
+        run: |
+          [ -n "$WAN_GATE" ] || { echo "WAN_GATE GH secret missing"; exit 1; }
+          modal secret create --force wan-gate WAN_GATE="$WAN_GATE" \
+            || modal secret create wan-gate WAN_GATE="$WAN_GATE" \
+            || echo "wan-gate exists (values may drift)"
+      - name: Deploy Skyfall LLM lane to Modal
+        run: |
+          set -eo pipefail
+          modal deploy modal_skyfall.py 2>&1 | tee modal_skyfall_deploy.log
+          grep -oiE 'https://[a-z0-9._-]*\.modal\.run[a-z0-9._/-]*' modal_skyfall_deploy.log | sort -u > modal_skyfall_urls.txt
+          cat modal_skyfall_urls.txt
+          [ -s modal_skyfall_urls.txt ] || { echo "no modal URLs captured"; exit 1; }
+      - name: Commit modal skyfall urls
+        run: |
+          git config user.name "e5-runner"
+          git config user.email "runner@e5enclave.com"
+          git add modal_skyfall_urls.txt modal_skyfall_deploy.log 2>/dev/null || true
+          git commit -m "record modal skyfall urls" || echo "no change"
+          git push
