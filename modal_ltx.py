@@ -25,7 +25,7 @@ image = (
     .run_commands(
         "git clone https://github.com/Lightricks/LTX-2.git /opt/ltx2 "
         f"&& cd /opt/ltx2 && git checkout {LTX_COMMIT}",
-        "pip install --no-cache-dir /opt/ltx2/packages/ltx-core /opt/ltx2/packages/ltx-pipelines",
+        "pip install --no-cache-dir /opt/ltx2/packages/ltx-core /opt/ltx2/packages/ltx-pipelines torchvision",
     )
     .uv_pip_install(
         "boto3",
