@@ -1,0 +1,37 @@
+name: modal-logs
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Modal app name"
+        default: "e5-skyfall-llm"
+permissions:
+  contents: write
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet modal
+      - name: Capture Modal app logs
+        run: |
+          APP="${{ github.event.inputs.app }}"
+          echo "== app list =="; modal app list 2>&1 | head -40 || true
+          echo "== logs (75s capture) =="
+          timeout 75 modal app logs "$APP" > "modal_${APP}_logs.txt" 2>&1 || true
+          echo "---- tail 160 ----"
+          tail -160 "modal_${APP}_logs.txt" || true
+      - name: Commit logs
+        run: |
+          git config user.name "e5-runner"
+          git config user.email "runner@e5enclave.com"
+          git pull --rebase --autostash || true
+          git add -A
+          git commit -m "capture ${{ github.event.inputs.app }} logs" || echo "no change"
+          git push || echo "push failed"
